@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a12">
+<meta name="description" content="Build a Village - gather wood, raise a settlement, assign villagers to jobs and hold off the raiders.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%8F%98%EF%B8%8F</text></svg>">
+<title>Build a Village</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overscroll-behavior: none; }
+body {
+  background: #0a0a12; overflow: hidden;
+  display: flex; justify-content: center; align-items: center;
+  font-family: 'Courier New', ui-monospace, monospace;
+  -webkit-user-select: none; user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+canvas { display: block; touch-action: none; cursor: default; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// ============================================================
+//  BUILD A VILLAGE - Web Edition
+//  Companion to the Godot desktop build. Vanilla JS, canvas 2D,
+//  no libraries. Desktop + tablet + phone.
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let CW = 0, CH = 0, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  CW = window.innerWidth;
+  CH = window.innerHeight;
+  canvas.width = Math.floor(CW * DPR);
+  canvas.height = Math.floor(CH * DPR);
+  canvas.style.width = CW + 'px';
+  canvas.style.height = CH + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layoutUI();
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+
+// ==================== AUDIO ====================
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null, muted = false;
+function ensureAudio() {
+  if (!AudioCtx) return;
+  if (!audioCtx) audioCtx = new AudioCtx();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function tone(type, freq, freq2, dur, vol) {
+  if (!audioCtx || muted) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, now);
+  if (freq2) osc.frequency.exponentialRampToValueAtTime(Math.max(1, freq2), now + dur);
+  gain.gain.setValueAtTime(vol, now);
+  gain.gain.exponentialRampToValueAtTime(0.0008, now + dur);
+  osc.start(now); osc.stop(now + dur + 0.02);
+}
+function playSound(kind) {
+  if (!audioCtx || muted) return;
+  switch (kind) {
+    case 'shoot':   tone('square',   680, 240, 0.07, 0.045); break;
+    case 'enemy':   tone('sawtooth', 300, 120, 0.09, 0.035); break;
+    case 'chop':    tone('triangle', 190,  95, 0.10, 0.060); break;
+    case 'wood':    tone('triangle', 420, 620, 0.12, 0.050); break;
+    case 'food':    tone('sine',     620, 880, 0.12, 0.045); break;
+    case 'place':   tone('square',   320, 440, 0.08, 0.040); break;
+    case 'built':   tone('triangle', 440, 880, 0.22, 0.060); break;
+    case 'hurt':    tone('sawtooth', 220,  70, 0.14, 0.055); break;
+    case 'die':     tone('sawtooth', 160,  50, 0.32, 0.070); break;
+    case 'wave':    tone('square',   180, 300, 0.30, 0.055); break;
+    case 'click':   tone('square',   520, 620, 0.05, 0.035); break;
+    case 'nope':    tone('square',   180, 120, 0.12, 0.045); break;
+    case 'boom':    tone('sawtooth', 120,  40, 0.40, 0.090); break;
+  }
+}
+
+// ==================== TUNING ====================
+// Mirrors the Godot build's numbers, with a few web-friendly tweaks
+// (shorter build time, tighter map) noted in the README.
+const T = {
+  START_WOOD: 20, START_FOOD: 20,
+  START_VILLAGERS: 2, VILLAGERS_PER_HOUSE: 2,
+
+  // Map is tighter than the desktop build so a phone screen shows a real
+  // village instead of a field of specks. Ranges scale with it.
+  WORLD_RADIUS: 34,
+  TREE_MIN_R: 5, TREE_MAX_R: 27,
+  INITIAL_TREES: 26, TREE_RESPAWN: 12,
+
+  FIRST_WAVE_DELAY: 45, WAVE_INTERVAL: 60,
+  BASE_WAVE_SIZE: 2, WAVE_SIZE_GROWTH: 1,
+  RAIDER_SPAWN_R: 33, TANK_WAVE: 5,
+
+  BUILD_TIME: 12,            // Godot uses 60s; shortened for a browser session
+  GRID: 2,
+
+  VILLAGER_HP: 20, VILLAGER_SPEED: 2.2, WANDER_RADIUS: 7, ARRIVE: 0.45,
+  FARMER_TIME: 2.0, FARMER_FOOD: 1,
+  WORKER_TIME: 3.0, WORKER_WOOD: 10,
+  // Soldiers deliberately out-range both the raiders and the tank, so massing
+  // them is a real answer instead of feeding them in one at a time.
+  SOLDIER_RANGE: 12, SOLDIER_INTERVAL: 1.0, SOLDIER_DAMAGE: 8, SOLDIER_ENGAGE: 22,
+
+  RAIDER_HP: 20, RAIDER_SPEED: 1.9, RAIDER_RANGE: 8,
+  RAIDER_DAMAGE: 6, RAIDER_COOLDOWN: 1.2,
+
+  TANK_HP: 80, TANK_SPEED: 1.0, TANK_RANGE: 9,
+  TANK_DAMAGE: 25, TANK_COOLDOWN: 3.4,
+
+  TRACER_LIFE: 0.09,
+};
+
+const BUILDINGS = {
+  House:    { cost: 5,  w: 2, h: 2, hp: 60,  color: '#9a663d', roof: '#6e4526', label: 'HOUSE',    key: '1', blurb: '+2 villagers' },
+  Farm:     { cost: 3,  w: 4, h: 4, hp: 40,  color: '#c4b04c', roof: '#9c8b34', label: 'FARM',     key: '2', blurb: 'grows food' },
+  Barracks: { cost: 10, w: 4, h: 4, hp: 100, color: '#74777f', roof: '#565a63', label: 'BARRACKS', key: '3', blurb: 'soldier post' },
+};
+const BUILD_ORDER = ['House', 'Farm', 'Barracks'];
+
+const JOBS = {
+  IDLE:    { name: 'IDLE',    short: 'IDLE',  color: '#d9b38c', key: 'U' },
+  FARMER:  { name: 'FARMER',  short: 'FARM',  color: '#f2d95a', key: 'F' },
+  WORKER:  { name: 'WORKER',  short: 'CHOP',  color: '#9a6633', key: 'L' },
+  SOLDIER: { name: 'SOLDIER', short: 'FIGHT', color: '#5a6670', key: 'M' },
+  BUILDER: { name: 'BUILDER', short: 'BUILD', color: '#f28c33', key: 'B' },
+};
+const JOB_ORDER = ['FARMER', 'WORKER', 'SOLDIER', 'BUILDER', 'IDLE'];
+
+// ==================== STATE ====================
+let state = 'menu';               // menu | playing | paused | gameover
+let wood = 0, food = 0;
+let villagers = [], buildings = [], sites = [], trees = [], raiders = [];
+let tracers = [], floats = [], puffs = [];
+let waveNumber = 0, waveCountdown = 0, treeCountdown = 0;
+let elapsed = 0, shake = 0, warnFlash = 0;
+let selected = null, placing = null;
+let best = 0;
+try { best = parseInt(localStorage.getItem('buildVillageBest') || '0', 10) || 0; } catch (e) {}
+
+const cam = { x: 0, y: 0, zoom: 15, minZoom: 7, maxZoom: 44 };
+function defaultZoom() { return clamp(Math.min(CW, CH) / 26, 9, 26); }
+const keys = {};
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+// ==================== MATH HELPERS ====================
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
+const dist = (ax, ay, bx, by) => Math.sqrt(dist2(ax, ay, bx, by));
+const rand = (a, b) => a + Math.random() * (b - a);
+const snap = v => Math.round(v / T.GRID) * T.GRID;
+
+function worldToScreen(x, y) { return [(x - cam.x) * cam.zoom + CW / 2, (y - cam.y) * cam.zoom + CH / 2]; }
+function screenToWorld(sx, sy) { return [(sx - CW / 2) / cam.zoom + cam.x, (sy - CH / 2) / cam.zoom + cam.y]; }
+
+function addFloat(x, y, text, color) { floats.push({ x, y, text, color, life: 1.2 }); }
+function addPuff(x, y, color, n) {
+  for (let i = 0; i < (n || 6); i++) {
+    const a = Math.random() * Math.PI * 2, s = rand(1.5, 5);
+    puffs.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rand(0.25, 0.6), color });
+  }
+}
+function addTracer(x1, y1, x2, y2, color) { tracers.push({ x1, y1, x2, y2, color, life: T.TRACER_LIFE }); }
+
+// ==================== SETUP ====================
+function newGame() {
+  wood = T.START_WOOD; food = T.START_FOOD;
+  villagers = []; buildings = []; sites = []; trees = []; raiders = [];
+  tracers = []; floats = []; puffs = [];
+  waveNumber = 0; waveCountdown = T.FIRST_WAVE_DELAY; treeCountdown = T.TREE_RESPAWN;
+  elapsed = 0; shake = 0; warnFlash = 0;
+  selected = null; placing = null;
+  cam.x = 0; cam.y = 0;
+  cam.zoom = defaultZoom();
+
+  for (let i = 0; i < T.INITIAL_TREES; i++) spawnTree();
+  for (let i = 0; i < T.START_VILLAGERS; i++) {
+    const a = Math.random() * Math.PI * 2;
+    spawnVillager(Math.cos(a) * 3, Math.sin(a) * 3);
+  }
+}
+
+function spawnTree() {
+  for (let tries = 0; tries < 30; tries++) {
+    const a = Math.random() * Math.PI * 2, r = rand(T.TREE_MIN_R, T.TREE_MAX_R);
+    const x = Math.cos(a) * r, y = Math.sin(a) * r;
+    if (boxBlocked(x, y, 3.0, 3.0)) continue;
+    trees.push({ x, y, r: rand(1.0, 1.45), sway: Math.random() * 6.28, shake: 0 });
+    return;
+  }
+}
+
+function spawnVillager(x, y) {
+  villagers.push({
+    x, y, hx: x, hy: y,
+    job: 'IDLE', stateM: 'wander',
+    tx: x, ty: y, idleTimer: rand(0.5, 2),
+    hp: T.VILLAGER_HP, workTimer: 0, fireTimer: 0,
+    tree: null, site: null, farm: null,
+    face: 0, hurt: 0, bob: Math.random() * 6.28,
+  });
+}
+
+// ---- placement helpers ----
+function boxesOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return Math.abs(ax - bx) * 2 < (aw + bw) && Math.abs(ay - by) * 2 < (ah + bh);
+}
+function boxBlocked(x, y, w, h, ignore) {
+  for (const b of buildings) { if (b === ignore) continue; const d = BUILDINGS[b.type]; if (boxesOverlap(x, y, w, h, b.x, b.y, d.w, d.h)) return true; }
+  for (const s of sites)     { if (s === ignore) continue; const d = BUILDINGS[s.type]; if (boxesOverlap(x, y, w, h, s.x, s.y, d.w, d.h)) return true; }
+  for (const t of trees)     { if (boxesOverlap(x, y, w, h, t.x, t.y, 2.0, 2.0)) return true; }
+  return false;
+}
+function canPlaceAt(type, x, y) {
+  const d = BUILDINGS[type];
+  if (dist(x, y, 0, 0) > T.WORLD_RADIUS - 4) return false;
+  return !boxBlocked(x, y, d.w, d.h);
+}
+function placeSite(type, x, y) {
+  const d = BUILDINGS[type];
+  sites.push({ type, x, y, progress: 0, claimedBy: null, paid: false, hp: d.hp });
+  playSound('place');
+  addFloat(x, y - 1, 'SITE', '#8ad7ff');
+}
+function finishSite(s) {
+  const d = BUILDINGS[s.type];
+  buildings.push({ type: s.type, x: s.x, y: s.y, hp: d.hp, maxHp: d.hp, hurt: 0, born: elapsed });
+  playSound('built');
+  addFloat(s.x, s.y - 1.5, s.type.toUpperCase() + ' DONE', '#7dffa8');
+  addPuff(s.x, s.y, '#d8d8c0', 10);
+  if (s.type === 'House') {
+    for (let i = 0; i < T.VILLAGERS_PER_HOUSE; i++) {
+      const a = Math.random() * Math.PI * 2;
+      spawnVillager(s.x + Math.cos(a) * 2, s.y + Math.sin(a) * 2);
+    }
+    addFloat(s.x, s.y - 3, '+' + T.VILLAGERS_PER_HOUSE + ' VILLAGERS', '#ffe07d');
+  }
+  sites.splice(sites.indexOf(s), 1);
+}
+
+// ==================== VILLAGER AI ====================
+function moveToward(u, tx, ty, speed, dt) {
+  const dx = tx - u.x, dy = ty - u.y, d = Math.hypot(dx, dy);
+  if (d < 0.0001) return 0;
+  const step = Math.min(speed * dt, d);
+  u.x += dx / d * step; u.y += dy / d * step;
+  u.face = Math.atan2(dy, dx);
+  return d - step;
+}
+
+function nearestOf(list, x, y, filter) {
+  let bestItem = null, bestD = Infinity;
+  for (const it of list) {
+    if (filter && !filter(it)) continue;
+    const d = dist2(x, y, it.x, it.y);
+    if (d < bestD) { bestD = d; bestItem = it; }
+  }
+  return bestItem;
+}
+
+function updateVillager(u, dt) {
+  if (u.hurt > 0) u.hurt -= dt;
+  u.bob += dt * 6;
+
+  switch (u.job) {
+    case 'FARMER': {
+      if (!u.farm || buildings.indexOf(u.farm) < 0) u.farm = nearestOf(buildings, u.x, u.y, b => b.type === 'Farm');
+      if (!u.farm) { wander(u, dt); return; }
+      const left = moveToward(u, u.farm.x, u.farm.y, T.VILLAGER_SPEED, dt);
+      if (left < 1.5) {
+        u.workTimer += dt;
+        if (u.workTimer >= T.FARMER_TIME) {
+          u.workTimer = 0; food += T.FARMER_FOOD;
+          addFloat(u.x, u.y - 1, '+' + T.FARMER_FOOD, '#ffe884');
+          playSound('food');
+        }
+      }
+      return;
+    }
+    case 'WORKER': {
+      if (!u.tree || trees.indexOf(u.tree) < 0) { u.tree = nearestOf(trees, u.x, u.y); u.workTimer = 0; }
+      if (!u.tree) { wander(u, dt); return; }
+      const left = moveToward(u, u.tree.x, u.tree.y, T.VILLAGER_SPEED, dt);
+      if (left < 1.4) {
+        u.workTimer += dt;
+        u.tree.shake = 0.12;
+        if (u.workTimer % 0.6 < dt) playSound('chop');
+        if (u.workTimer >= T.WORKER_TIME) {
+          u.workTimer = 0;
+          wood += T.WORKER_WOOD;
+          addFloat(u.tree.x, u.tree.y - 1, '+' + T.WORKER_WOOD + ' WOOD', '#c79a5a');
+          addPuff(u.tree.x, u.tree.y, '#3f7a3a', 8);
+          playSound('wood');
+          trees.splice(trees.indexOf(u.tree), 1);
+          u.tree = null;
+        }
+      }
+      return;
+    }
+    case 'BUILDER': {
+      if (u.site && sites.indexOf(u.site) < 0) u.site = null;
+      if (u.site && u.site.claimedBy && u.site.claimedBy !== u) u.site = null;
+      if (!u.site) {
+        u.site = nearestOf(sites, u.x, u.y, s => !s.claimedBy && (s.paid || wood >= BUILDINGS[s.type].cost));
+        if (u.site) u.site.claimedBy = u;
+      }
+      if (!u.site) { wander(u, dt); return; }
+      const left = moveToward(u, u.site.x, u.site.y, T.VILLAGER_SPEED, dt);
+      if (left < 1.6) {
+        if (!u.site.paid) {
+          const cost = BUILDINGS[u.site.type].cost;
+          if (wood < cost) { u.site.claimedBy = null; u.site = null; return; }
+          wood -= cost; u.site.paid = true;
+          addFloat(u.site.x, u.site.y - 1, '-' + cost + ' WOOD', '#ff9a6a');
+        }
+        u.site.progress += dt / T.BUILD_TIME;
+        if (Math.random() < dt * 3) addPuff(u.site.x + rand(-1, 1), u.site.y + rand(-1, 1), '#cfc9a8', 1);
+        if (u.site.progress >= 1) { const s = u.site; u.site = null; finishSite(s); }
+      }
+      return;
+    }
+    case 'SOLDIER': {
+      const enemy = nearestOf(raiders, u.x, u.y);
+      u.fireTimer -= dt;
+      if (enemy && dist(u.x, u.y, enemy.x, enemy.y) <= T.SOLDIER_RANGE) {
+        u.face = Math.atan2(enemy.y - u.y, enemy.x - u.x);
+        if (u.fireTimer <= 0) {
+          u.fireTimer = T.SOLDIER_INTERVAL;
+          addTracer(u.x, u.y, enemy.x, enemy.y, '#ffe9a0');
+          damageRaider(enemy, T.SOLDIER_DAMAGE);
+          playSound('shoot');
+        }
+      } else if (enemy && dist(u.x, u.y, enemy.x, enemy.y) <= T.SOLDIER_ENGAGE) {
+        // Only advance on threats that are already close, so the militia holds
+        // together instead of trickling out one at a time and getting picked off.
+        moveToward(u, enemy.x, enemy.y, T.VILLAGER_SPEED, dt);
+      } else {
+        wander(u, dt);
+      }
+      return;
+    }
+    default: wander(u, dt);
+  }
+}
+
+function wander(u, dt) {
+  if (u.stateM === 'wander') {
+    u.idleTimer -= dt;
+    if (u.idleTimer <= 0) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * T.WANDER_RADIUS;
+      u.tx = clamp(u.hx + Math.cos(a) * r, -T.WORLD_RADIUS, T.WORLD_RADIUS);
+      u.ty = clamp(u.hy + Math.sin(a) * r, -T.WORLD_RADIUS, T.WORLD_RADIUS);
+      u.stateM = 'moving';
+    }
+  } else {
+    const left = moveToward(u, u.tx, u.ty, T.VILLAGER_SPEED * 0.7, dt);
+    if (left < T.ARRIVE) { u.stateM = 'wander'; u.idleTimer = rand(1, 3); }
+  }
+}
+
+// ==================== ENEMIES ====================
+function spawnWave() {
+  waveNumber++;
+  const size = T.BASE_WAVE_SIZE + T.WAVE_SIZE_GROWTH * (waveNumber - 1);
+  const baseAngle = Math.random() * Math.PI * 2;
+  for (let i = 0; i < size; i++) {
+    const a = baseAngle + rand(-0.5, 0.5) + (i * 0.14);
+    raiders.push({
+      x: Math.cos(a) * T.RAIDER_SPAWN_R, y: Math.sin(a) * T.RAIDER_SPAWN_R,
+      hp: T.RAIDER_HP, maxHp: T.RAIDER_HP, tank: false,
+      attackTimer: rand(0, 1), retarget: 0, target: null, face: 0, hurt: 0, bob: Math.random() * 6.28,
+    });
+  }
+  if (waveNumber === T.TANK_WAVE || (waveNumber > T.TANK_WAVE && waveNumber % T.TANK_WAVE === 0)) {
+    const a = baseAngle + rand(-0.3, 0.3);
+    raiders.push({
+      x: Math.cos(a) * T.RAIDER_SPAWN_R, y: Math.sin(a) * T.RAIDER_SPAWN_R,
+      hp: T.TANK_HP, maxHp: T.TANK_HP, tank: true,
+      attackTimer: 1.5, retarget: 0, target: null, face: 0, hurt: 0, bob: 0,
+    });
+  }
+  playSound('wave');
+  warnFlash = 2.5;
+}
+
+function damageRaider(r, amount) {
+  r.hp -= amount; r.hurt = 0.15;
+  addPuff(r.x, r.y, r.tank ? '#8a8a70' : '#c04040', 3);
+  if (r.hp <= 0) {
+    raiders.splice(raiders.indexOf(r), 1);
+    addPuff(r.x, r.y, r.tank ? '#ffb060' : '#e05050', r.tank ? 18 : 9);
+    playSound(r.tank ? 'boom' : 'die');
+    if (r.tank) shake = Math.max(shake, 0.5);
+  }
+}
+
+function damageVillager(u, amount) {
+  u.hp -= amount; u.hurt = 0.2;
+  addPuff(u.x, u.y, '#e0a0a0', 3);
+  if (u.hp <= 0) {
+    if (selected === u) selected = null;
+    if (u.site && u.site.claimedBy === u) u.site.claimedBy = null;
+    villagers.splice(villagers.indexOf(u), 1);
+    addFloat(u.x, u.y - 1, 'LOST', '#ff6b6b');
+    addPuff(u.x, u.y, '#d8b090', 12);
+    playSound('die');
+  }
+}
+
+function damageBuilding(b, amount) {
+  b.hp -= amount; b.hurt = 0.2;
+  if (b.hp <= 0) {
+    buildings.splice(buildings.indexOf(b), 1);
+    addPuff(b.x, b.y, '#a08060', 16);
+    addFloat(b.x, b.y - 1.5, b.type.toUpperCase() + ' LOST', '#ff6b6b');
+    playSound('boom');
+    shake = Math.max(shake, 0.35);
+    for (const u of villagers) { if (u.farm === b) u.farm = null; }
+  }
+}
+
+function updateRaider(r, dt) {
+  if (r.hurt > 0) r.hurt -= dt;
+  r.bob += dt * 5;
+  const range = r.tank ? T.TANK_RANGE : T.RAIDER_RANGE;
+  const speed = r.tank ? T.TANK_SPEED : T.RAIDER_SPEED;
+  const dmg = r.tank ? T.TANK_DAMAGE : T.RAIDER_DAMAGE;
+  const cd = r.tank ? T.TANK_COOLDOWN : T.RAIDER_COOLDOWN;
+
+  r.retarget -= dt;
+  const targetGone = !r.target ||
+    (r.target.hp === undefined) ||
+    (villagers.indexOf(r.target) < 0 && buildings.indexOf(r.target) < 0);
+  if (r.retarget <= 0 || targetGone) {
+    r.retarget = 2.0;
+    r.target = nearestOf(villagers, r.x, r.y) || nearestOf(buildings, r.x, r.y);
+  }
+  if (!r.target) { moveToward(r, 0, 0, speed, dt); return; }
+
+  const d = dist(r.x, r.y, r.target.x, r.target.y);
+  if (d > range) {
+    moveToward(r, r.target.x, r.target.y, speed, dt);
+  } else {
+    r.face = Math.atan2(r.target.y - r.y, r.target.x - r.x);
+    r.attackTimer -= dt;
+    if (r.attackTimer <= 0) {
+      r.attackTimer = cd;
+      addTracer(r.x, r.y, r.target.x, r.target.y, r.tank ? '#ff8a3a' : '#ff5a35');
+      playSound(r.tank ? 'boom' : 'enemy');
+      if (villagers.indexOf(r.target) >= 0) damageVillager(r.target, dmg);
+      else damageBuilding(r.target, dmg);
+      if (r.tank) shake = Math.max(shake, 0.22);
+    }
+  }
+}
+
+// ==================== DECOR ====================
+let decor = [];
+function buildDecor() {
+  decor = [];
+  for (let i = 0; i < 260; i++) {
+    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * T.WORLD_RADIUS;
+    decor.push({ x: Math.cos(a) * r, y: Math.sin(a) * r, s: rand(0.25, 0.7), t: Math.random() < 0.25 ? 1 : 0 });
+  }
+}
+
+// ==================== WORLD RENDER ====================
+function drawGround() {
+  ctx.fillStyle = '#131a14';
+  ctx.fillRect(0, 0, CW, CH);
+
+  const [cx, cy] = worldToScreen(0, 0);
+  const R = T.WORLD_RADIUS * cam.zoom;
+  const g = ctx.createRadialGradient(cx, cy, R * 0.05, cx, cy, R);
+  g.addColorStop(0, '#3d7040');
+  g.addColorStop(0.65, '#336136');
+  g.addColorStop(1, '#27492a');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(20,32,20,0.85)'; ctx.lineWidth = Math.max(2, cam.zoom * 0.35);
+  ctx.stroke();
+
+  if (cam.zoom > 6) {
+    for (const d of decor) {
+      const [sx, sy] = worldToScreen(d.x, d.y);
+      if (sx < -20 || sx > CW + 20 || sy < -20 || sy > CH + 20) continue;
+      ctx.fillStyle = d.t ? 'rgba(120,150,90,0.35)' : 'rgba(30,60,32,0.45)';
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, d.s * cam.zoom * 0.5, d.s * cam.zoom * 0.28, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function shadow(sx, sy, rx, ry) {
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.beginPath(); ctx.ellipse(sx, sy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawTrees() {
+  for (const t of trees) {
+    const [sx, sy] = worldToScreen(t.x, t.y);
+    const z = cam.zoom, r = t.r * z;
+    if (sx < -40 || sx > CW + 40 || sy < -40 || sy > CH + 40) continue;
+    const wob = t.shake > 0 ? Math.sin(elapsed * 60) * z * 0.12 : 0;
+    shadow(sx + z * 0.22, sy + z * 0.28, r * 0.85, r * 0.5);
+    ctx.fillStyle = '#5a3d22';
+    ctx.beginPath(); ctx.arc(sx, sy, Math.max(1.5, r * 0.3), 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2f6b31';
+    ctx.beginPath(); ctx.arc(sx + wob, sy - r * 0.25, r * 0.95, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3f8a3f';
+    ctx.beginPath(); ctx.arc(sx + wob - r * 0.28, sy - r * 0.5, r * 0.62, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#4f9e46';
+    ctx.beginPath(); ctx.arc(sx + wob + r * 0.24, sy - r * 0.42, r * 0.46, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawBuildingShape(type, sx, sy, z, alpha, hurt) {
+  const d = BUILDINGS[type];
+  const w = d.w * z, h = d.h * z;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  shadow(sx + z * 0.25, sy + z * 0.3, w * 0.55, h * 0.4);
+  ctx.fillStyle = hurt > 0 ? '#ffd0d0' : d.color;
+  ctx.fillRect(sx - w / 2, sy - h / 2, w, h);
+  ctx.strokeStyle = 'rgba(15,20,15,0.7)'; ctx.lineWidth = Math.max(1, z * 0.09);
+  ctx.strokeRect(sx - w / 2, sy - h / 2, w, h);
+
+  if (type === 'House') {
+    ctx.fillStyle = d.roof;
+    ctx.beginPath();
+    ctx.moveTo(sx - w / 2, sy - h / 2); ctx.lineTo(sx + w / 2, sy - h / 2);
+    ctx.lineTo(sx + w / 2 - w * 0.18, sy); ctx.lineTo(sx - w / 2 + w * 0.18, sy);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#4a2f18';
+    ctx.fillRect(sx - w * 0.09, sy + h * 0.16, w * 0.18, h * 0.3);
+  } else if (type === 'Farm') {
+    ctx.strokeStyle = 'rgba(90,75,25,0.55)'; ctx.lineWidth = Math.max(1, z * 0.12);
+    for (let i = 1; i < 5; i++) {
+      const yy = sy - h / 2 + (h / 5) * i;
+      ctx.beginPath(); ctx.moveTo(sx - w / 2 + z * 0.2, yy); ctx.lineTo(sx + w / 2 - z * 0.2, yy); ctx.stroke();
+    }
+    ctx.fillStyle = '#8fbf4a';
+    for (let i = 0; i < 6; i++) {
+      ctx.beginPath();
+      ctx.arc(sx - w / 2 + w * (0.18 + 0.16 * (i % 4)), sy - h / 2 + h * (0.24 + 0.28 * Math.floor(i / 4)), z * 0.16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else {
+    ctx.fillStyle = d.roof;
+    ctx.fillRect(sx - w / 2 + z * 0.2, sy - h / 2 + z * 0.2, w - z * 0.4, h * 0.34);
+    ctx.strokeStyle = '#3a3d43'; ctx.lineWidth = Math.max(1, z * 0.1);
+    ctx.beginPath(); ctx.moveTo(sx + w * 0.3, sy + h * 0.34); ctx.lineTo(sx + w * 0.3, sy - h * 0.1); ctx.stroke();
+    ctx.fillStyle = '#c8443c';
+    ctx.beginPath();
+    ctx.moveTo(sx + w * 0.3, sy - h * 0.1); ctx.lineTo(sx + w * 0.05, sy - h * 0.02); ctx.lineTo(sx + w * 0.3, sy + h * 0.06);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawBuildings() {
+  for (const b of buildings) {
+    const [sx, sy] = worldToScreen(b.x, b.y);
+    if (b.hurt > 0) b.hurt -= 1 / 60;
+    drawBuildingShape(b.type, sx, sy, cam.zoom, 1, b.hurt);
+    if (b.hp < b.maxHp) barAt(sx, sy - BUILDINGS[b.type].h * cam.zoom / 2 - 8, b.hp / b.maxHp, '#5fd86a');
+  }
+  for (const s of sites) {
+    const [sx, sy] = worldToScreen(s.x, s.y);
+    const d = BUILDINGS[s.type], w = d.w * cam.zoom, h = d.h * cam.zoom;
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    drawBuildingShape(s.type, sx, sy, cam.zoom, 0.35, 0);
+    ctx.restore();
+    ctx.save();
+    ctx.setLineDash([Math.max(3, cam.zoom * 0.4), Math.max(3, cam.zoom * 0.3)]);
+    ctx.strokeStyle = s.paid ? '#8ad7ff' : '#c9c9a0';
+    ctx.lineWidth = Math.max(1.5, cam.zoom * 0.11);
+    ctx.strokeRect(sx - w / 2, sy - h / 2, w, h);
+    ctx.restore();
+    barAt(sx, sy - h / 2 - 8, s.progress, '#4ad6ff');
+    if (!s.paid && wood < d.cost) {
+      ctx.fillStyle = '#ff9a6a'; ctx.font = 'bold ' + FS(11) + 'px Courier New'; ctx.textAlign = 'center';
+      ctx.fillText('NEED ' + d.cost + ' WOOD', sx, sy - h / 2 - 16);
+    }
+  }
+}
+
+function barAt(sx, sy, frac, color) {
+  const w = Math.max(20, cam.zoom * 2.2), h = 5;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(sx - w / 2, sy, w, h);
+  ctx.fillStyle = color; ctx.fillRect(sx - w / 2 + 1, sy + 1, (w - 2) * clamp(frac, 0, 1), h - 2);
+}
+
+function drawVillagers() {
+  for (const u of villagers) {
+    const [sx, sy] = worldToScreen(u.x, u.y);
+    const z = cam.zoom;
+    if (sx < -40 || sx > CW + 40 || sy < -40 || sy > CH + 40) continue;
+    const bob = Math.sin(u.bob) * z * 0.06;
+    shadow(sx, sy + z * 0.48, z * 0.5, z * 0.26);
+
+    if (u === selected) {
+      ctx.strokeStyle = '#4ad6ff'; ctx.lineWidth = Math.max(2, z * 0.14);
+      ctx.beginPath(); ctx.ellipse(sx, sy + z * 0.46, z * 0.85, z * 0.46, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    const jc = JOBS[u.job].color;
+    ctx.fillStyle = u.hurt > 0 ? '#ffd4d4' : jc;
+    ctx.beginPath(); ctx.arc(sx, sy + bob, z * 0.48, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = Math.max(1, z * 0.07);
+    ctx.beginPath(); ctx.arc(sx, sy + bob, z * 0.48, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#f0d0aa';
+    ctx.beginPath(); ctx.arc(sx, sy - z * 0.3 + bob, z * 0.27, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.lineWidth = Math.max(1, z * 0.05);
+    ctx.beginPath(); ctx.arc(sx, sy - z * 0.3 + bob, z * 0.27, 0, Math.PI * 2); ctx.stroke();
+
+    if (u.job === 'SOLDIER') {
+      ctx.strokeStyle = '#2c2f33'; ctx.lineWidth = Math.max(2, z * 0.15);
+      ctx.beginPath(); ctx.moveTo(sx, sy + bob);
+      ctx.lineTo(sx + Math.cos(u.face) * z * 1.0, sy + Math.sin(u.face) * z * 1.0 + bob);
+      ctx.stroke();
+    } else if (u.job === 'WORKER') {
+      ctx.strokeStyle = '#8a5a30'; ctx.lineWidth = Math.max(2, z * 0.13);
+      ctx.beginPath(); ctx.moveTo(sx + z * 0.32, sy + bob + z * 0.1);
+      ctx.lineTo(sx + z * 0.78, sy + bob - z * 0.5); ctx.stroke();
+      ctx.fillStyle = '#d0d4d8';
+      ctx.beginPath(); ctx.arc(sx + z * 0.78, sy + bob - z * 0.52, z * 0.19, 0, Math.PI * 2); ctx.fill();
+    } else if (u.job === 'BUILDER') {
+      ctx.fillStyle = '#ffd24a';
+      ctx.beginPath(); ctx.arc(sx, sy - z * 0.38 + bob, z * 0.31, Math.PI, 0); ctx.fill();
+      ctx.fillRect(sx - z * 0.34, sy - z * 0.4 + bob, z * 0.68, z * 0.1);
+    } else if (u.job === 'FARMER') {
+      ctx.fillStyle = '#e8c86a';
+      ctx.beginPath(); ctx.ellipse(sx, sy - z * 0.4 + bob, z * 0.44, z * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    if (u.hp < T.VILLAGER_HP) barAt(sx, sy - z * 1.15, u.hp / T.VILLAGER_HP, '#5fd86a');
+  }
+}
+
+function drawRaiders() {
+  for (const r of raiders) {
+    const [sx, sy] = worldToScreen(r.x, r.y);
+    const z = cam.zoom;
+    if (sx < -60 || sx > CW + 60 || sy < -60 || sy > CH + 60) continue;
+    if (r.tank) {
+      const w = z * 2.8, h = z * 1.9;
+      shadow(sx, sy + z * 0.6, w * 0.55, h * 0.4);
+      ctx.fillStyle = '#3f4a34';
+      ctx.fillRect(sx - w / 2, sy - h / 2 - z * 0.34, w, z * 0.34);
+      ctx.fillRect(sx - w / 2, sy + h / 2, w, z * 0.34);
+      ctx.fillStyle = r.hurt > 0 ? '#ffd0d0' : '#59683f';
+      ctx.fillRect(sx - w / 2, sy - h / 2, w, h);
+      ctx.strokeStyle = 'rgba(10,15,10,0.8)'; ctx.lineWidth = 2;
+      ctx.strokeRect(sx - w / 2, sy - h / 2, w, h);
+      ctx.fillStyle = '#46522f';
+      ctx.beginPath(); ctx.arc(sx, sy, z * 0.65, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#2f3a20'; ctx.lineWidth = Math.max(3, z * 0.26);
+      ctx.beginPath(); ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + Math.cos(r.face) * z * 1.9, sy + Math.sin(r.face) * z * 1.9); ctx.stroke();
+      barAt(sx, sy - h / 2 - z * 0.6, r.hp / r.maxHp, '#ff6b6b');
+    } else {
+      const bob = Math.sin(r.bob) * z * 0.06;
+      shadow(sx, sy + z * 0.48, z * 0.5, z * 0.26);
+      ctx.fillStyle = r.hurt > 0 ? '#ffd0d0' : '#bf2626';
+      ctx.beginPath(); ctx.arc(sx, sy + bob, z * 0.48, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = Math.max(1, z * 0.07);
+      ctx.beginPath(); ctx.arc(sx, sy + bob, z * 0.48, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#8f1a1a';
+      ctx.beginPath(); ctx.arc(sx, sy - z * 0.3 + bob, z * 0.27, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#40160f'; ctx.lineWidth = Math.max(2, z * 0.15);
+      ctx.beginPath(); ctx.moveTo(sx, sy + bob);
+      ctx.lineTo(sx + Math.cos(r.face) * z * 0.95, sy + Math.sin(r.face) * z * 0.95 + bob); ctx.stroke();
+      if (r.hp < r.maxHp) barAt(sx, sy - z * 1.15, r.hp / r.maxHp, '#ff6b6b');
+    }
+  }
+}
+
+function drawEffects() {
+  for (const t of tracers) {
+    const [x1, y1] = worldToScreen(t.x1, t.y1), [x2, y2] = worldToScreen(t.x2, t.y2);
+    ctx.strokeStyle = t.color; ctx.globalAlpha = clamp(t.life / T.TRACER_LIFE, 0, 1);
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  for (const p of puffs) {
+    const [sx, sy] = worldToScreen(p.x, p.y);
+    ctx.globalAlpha = clamp(p.life * 2, 0, 1);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(sx, sy, Math.max(1, cam.zoom * 0.12), 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.textAlign = 'center';
+  for (const f of floats) {
+    const [sx, sy] = worldToScreen(f.x, f.y);
+    ctx.globalAlpha = clamp(f.life, 0, 1);
+    ctx.fillStyle = f.color;
+    ctx.font = 'bold ' + FS(12) + 'px Courier New';
+    ctx.fillText(f.text, sx, sy - (1.2 - f.life) * 26);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawPlacementGhost() {
+  if (!placing) return;
+  const [wx, wy] = screenToWorld(pointer.x, pointer.y);
+  const gx = snap(wx), gy = snap(wy);
+  const ok = canPlaceAt(placing, gx, gy) && wood >= BUILDINGS[placing].cost;
+  const [sx, sy] = worldToScreen(gx, gy);
+  const d = BUILDINGS[placing], w = d.w * cam.zoom, h = d.h * cam.zoom;
+  ctx.save();
+  ctx.globalAlpha = 0.45;
+  drawBuildingShape(placing, sx, sy, cam.zoom, 0.45, 0);
+  ctx.restore();
+  ctx.strokeStyle = ok ? '#5fffa0' : '#ff5a5a';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(sx - w / 2, sy - h / 2, w, h);
+  ctx.fillStyle = ok ? '#5fffa0' : '#ff5a5a';
+  ctx.font = 'bold ' + FS(12) + 'px Courier New'; ctx.textAlign = 'center';
+  ctx.fillText(ok ? 'TAP TO PLACE' : (wood < d.cost ? 'NOT ENOUGH WOOD' : 'BLOCKED'), sx, sy - h / 2 - 10);
+}
+
+// ==================== UI LAYOUT ====================
+let uiScale = 1;
+function FS(n) { return Math.round(n * uiScale); }
+function roundRect(x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+const UI = { build: [], jobs: [], pause: null, mute: null, play: null, barTop: 0 };
+
+function layoutUI() {
+  uiScale = clamp(Math.min(CW, CH) / 430, 0.82, 1.45);
+  const pad = 10 * uiScale;
+  const bh = Math.round(56 * uiScale);
+  const bw = Math.min(Math.round(150 * uiScale), Math.floor((CW - pad * 4) / 3));
+  const totalW = bw * 3 + pad * 2;
+  const x0 = (CW - totalW) / 2;
+  const yBuild = CH - bh - pad - (env('safeBottom'));
+  UI.build = BUILD_ORDER.map((t, i) => ({ type: t, x: x0 + i * (bw + pad), y: yBuild, w: bw, h: bh }));
+
+  const jh = Math.round(42 * uiScale);
+  const jw = Math.min(Math.round(96 * uiScale), Math.floor((CW - pad * 6) / 5));
+  const jtotal = jw * 5 + pad * 4;
+  const jx0 = (CW - jtotal) / 2;
+  const yJobs = yBuild - jh - pad;
+  UI.jobs = JOB_ORDER.map((j, i) => ({ job: j, x: jx0 + i * (jw + pad), y: yJobs, w: jw, h: jh }));
+
+  UI.barTop = Math.round(46 * uiScale);
+  const r = Math.round(20 * uiScale);
+  const topY = pad + UI.barTop + pad + r;
+  UI.pause = { x: CW - pad - r, y: topY, r };
+  UI.mute = { x: CW - pad - r - r * 2.4, y: topY, r };
+}
+function env() { return 0; }
+
+function hitRect(p, x, y) { return x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h; }
+function hitCircle(c, x, y) { const d = dist2(x, y, c.x, c.y); return d <= (c.r * 1.35) * (c.r * 1.35); }
+
+// ==================== HUD ====================
+function drawHUD() {
+  const pad = 10 * uiScale;
+  const h = UI.barTop;
+  ctx.fillStyle = 'rgba(10,10,18,0.72)';
+  roundRect(pad, pad, CW - pad * 2, h, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(74,214,255,0.25)'; ctx.lineWidth = 1; ctx.stroke();
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  const cy = pad + h / 2;
+  const f = FS(15);
+  ctx.font = 'bold ' + f + 'px Courier New';
+  let x = pad + 14 * uiScale;
+  const items = [
+    ['#c79a5a', 'WOOD ' + wood],
+    ['#ffe884', 'FOOD ' + food],
+    ['#e8e8f0', 'POP ' + villagers.length],
+  ];
+  for (const [c, txt] of items) {
+    ctx.fillStyle = c; ctx.fillText(txt, x, cy);
+    x += ctx.measureText(txt).width + 18 * uiScale;
+  }
+
+  ctx.textAlign = 'right';
+  const t = Math.max(0, Math.ceil(waveCountdown));
+  const mm = Math.floor(t / 60), ss = ('0' + (t % 60)).slice(-2);
+  const label = raiders.length > 0
+    ? 'RAID ' + waveNumber + ' - ' + raiders.length + ' LEFT'
+    : 'WAVE ' + (waveNumber + 1) + ' IN ' + mm + ':' + ss;
+  ctx.fillStyle = raiders.length > 0 ? '#ff6b6b' : (waveCountdown < 10 ? '#ffb347' : '#8a8aa0');
+  ctx.fillText(label, CW - pad - 14 * uiScale, cy);
+  ctx.textBaseline = 'alphabetic';
+
+  // pause + mute
+  circleBtn(UI.pause, () => {
+    ctx.fillStyle = '#cfe6f5';
+    const r = UI.pause.r;
+    ctx.fillRect(UI.pause.x - r * 0.32, UI.pause.y - r * 0.42, r * 0.22, r * 0.84);
+    ctx.fillRect(UI.pause.x + r * 0.1, UI.pause.y - r * 0.42, r * 0.22, r * 0.84);
+  });
+  circleBtn(UI.mute, () => {
+    const r = UI.mute.r, x = UI.mute.x, y = UI.mute.y;
+    ctx.fillStyle = muted ? '#6c6c80' : '#cfe6f5';
+    ctx.beginPath();
+    ctx.moveTo(x - r * 0.45, y - r * 0.18); ctx.lineTo(x - r * 0.2, y - r * 0.18);
+    ctx.lineTo(x + r * 0.12, y - r * 0.48); ctx.lineTo(x + r * 0.12, y + r * 0.48);
+    ctx.lineTo(x - r * 0.2, y + r * 0.18); ctx.lineTo(x - r * 0.45, y + r * 0.18);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = muted ? '#6c6c80' : '#cfe6f5'; ctx.lineWidth = Math.max(1.5, r * 0.11);
+    if (muted) {
+      ctx.strokeStyle = '#ff6b6b';
+      ctx.beginPath(); ctx.moveTo(x - r * 0.5, y + r * 0.5); ctx.lineTo(x + r * 0.5, y - r * 0.5); ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(x + r * 0.2, y, r * 0.34, -0.9, 0.9); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x + r * 0.2, y, r * 0.6, -0.8, 0.8); ctx.stroke();
+    }
+  });
+
+  if (warnFlash > 0 && Math.floor(elapsed * 4) % 2 === 0) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff5a5a';
+    ctx.font = 'bold ' + FS(22) + 'px Courier New';
+    ctx.fillText('RAIDERS INCOMING', CW / 2, pad + h + FS(30));
+  }
+}
+
+function circleBtn(c, drawIcon) {
+  ctx.save();
+  ctx.globalAlpha = 0.75;
+  ctx.fillStyle = '#14141f'; ctx.strokeStyle = 'rgba(74,214,255,0.4)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.globalAlpha = 1;
+  drawIcon();
+  ctx.restore();
+}
+
+function drawBottomBar() {
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const b of UI.build) {
+    const d = BUILDINGS[b.type];
+    const affordable = wood >= d.cost;
+    const active = placing === b.type;
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = active ? '#1c3446' : '#14141f';
+    roundRect(b.x, b.y, b.w, b.h, 10); ctx.fill();
+    ctx.strokeStyle = active ? '#4ad6ff' : (affordable ? 'rgba(74,214,255,0.35)' : 'rgba(120,120,140,0.28)');
+    ctx.lineWidth = active ? 2.5 : 1.5; ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = affordable ? '#e8e8f0' : '#6c6c80';
+    ctx.font = 'bold ' + FS(13) + 'px Courier New';
+    ctx.fillText(d.label, b.x + b.w / 2, b.y + b.h * 0.34);
+    ctx.fillStyle = affordable ? '#c79a5a' : '#5a5a6c';
+    ctx.font = 'bold ' + FS(12) + 'px Courier New';
+    ctx.fillText(d.cost + ' WOOD' + (isTouch ? '' : '  [' + d.key + ']'), b.x + b.w / 2, b.y + b.h * 0.68);
+  }
+  if (selected) {
+    for (const j of UI.jobs) {
+      const cfg = JOBS[j.job];
+      const active = selected.job === j.job;
+      ctx.globalAlpha = 0.92;
+      ctx.fillStyle = active ? '#1c3446' : '#14141f';
+      roundRect(j.x, j.y, j.w, j.h, 8); ctx.fill();
+      ctx.strokeStyle = active ? '#4ad6ff' : 'rgba(120,120,140,0.3)';
+      ctx.lineWidth = active ? 2.5 : 1.5; ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = cfg.color;
+      ctx.beginPath(); ctx.arc(j.x + j.w / 2, j.y + j.h * 0.32, FS(6), 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = active ? '#e8e8f0' : '#a8a8c0';
+      ctx.font = 'bold ' + FS(11) + 'px Courier New';
+      ctx.fillText(cfg.short, j.x + j.w / 2, j.y + j.h * 0.72);
+    }
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawHint() {
+  if (elapsed > 26 || state !== 'playing' || selected) return;
+  ctx.save();
+  ctx.globalAlpha = clamp((26 - elapsed) / 5, 0, 1) * 0.95;
+  ctx.textAlign = 'center';
+  const y = UI.build[0].y - FS(30);
+  const w = Math.min(CW - 20, FS(420));
+  ctx.fillStyle = 'rgba(10,10,18,0.7)';
+  roundRect((CW - w) / 2, y - FS(17), w, FS(42), 8); ctx.fill();
+  ctx.fillStyle = '#8ad7ff';
+  ctx.font = 'bold ' + FS(12) + 'px Courier New';
+  ctx.fillText(isTouch ? 'TAP A VILLAGER, THEN PICK A JOB' : 'CLICK A VILLAGER, THEN PICK A JOB (F/L/M/B/U)', CW / 2, y);
+  ctx.fillText('CHOP FIRST - WOOD BUILDS EVERYTHING', CW / 2, y + FS(17));
+  ctx.restore();
+}
+
+// ==================== SCREENS ====================
+function panel(w, h) {
+  const x = (CW - w) / 2, y = (CH - h) / 2;
+  ctx.fillStyle = 'rgba(10,10,18,0.9)';
+  roundRect(x, y, w, h, 16); ctx.fill();
+  ctx.strokeStyle = 'rgba(74,214,255,0.35)'; ctx.lineWidth = 2; ctx.stroke();
+  return [x, y];
+}
+
+function drawMenu() {
+  ctx.fillStyle = 'rgba(6,8,10,0.72)'; ctx.fillRect(0, 0, CW, CH);
+  ctx.textAlign = 'center';
+  const cx = CW / 2;
+  const titleY = CH * 0.24;
+  ctx.fillStyle = '#e8e8f0';
+  ctx.font = 'bold ' + Math.round(clamp(CW * 0.075, 26, 58)) + 'px Courier New';
+  ctx.fillText('BUILD A VILLAGE', cx, titleY);
+  ctx.fillStyle = '#8a8aa0';
+  ctx.font = 'bold ' + FS(13) + 'px Courier New';
+  ctx.fillText('GATHER  -  BUILD  -  DEFEND', cx, titleY + FS(26));
+
+  const lines = isTouch ? [
+    'TAP a villager, then tap a JOB button',
+    'CHOP for wood  -  FARM for food  -  BUILD raises houses',
+    'FIGHT holds off the raiders',
+    'Tap HOUSE / FARM / BARRACKS, then tap the ground',
+    'Drag to move the map  -  pinch to zoom',
+  ] : [
+    'CLICK a villager, then press F / L / M / B / U',
+    'CHOP for wood  -  FARM for food  -  BUILD raises houses',
+    'FIGHT holds off the raiders',
+    'Press 1 / 2 / 3 to pick a building, click the ground to place',
+    'WASD or arrows to pan  -  mouse wheel to zoom',
+  ];
+  ctx.fillStyle = '#a8a8c0';
+  ctx.font = FS(13) + 'px Courier New';
+  let ly = titleY + FS(62);
+  for (const l of lines) { ctx.fillText(l, cx, ly); ly += FS(21); }
+
+  ctx.fillStyle = '#8a8aa0';
+  ctx.font = 'bold ' + FS(12) + 'px Courier New';
+  ctx.fillText('First raid arrives in 45 seconds. Build fast.', cx, ly + FS(12));
+  if (best > 0) ctx.fillText('BEST: ' + best + ' WAVE' + (best === 1 ? '' : 'S') + ' SURVIVED', cx, ly + FS(32));
+
+  const bw = Math.min(260 * uiScale, CW * 0.7), bh = 54 * uiScale;
+  UI.play = { x: cx - bw / 2, y: CH * 0.80 - bh / 2, w: bw, h: bh };
+  ctx.fillStyle = '#14141f';
+  roundRect(UI.play.x, UI.play.y, bw, bh, 12); ctx.fill();
+  ctx.strokeStyle = '#4ad6ff'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.fillStyle = '#4ad6ff';
+  ctx.font = 'bold ' + FS(20) + 'px Courier New';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('> PLAY', cx, UI.play.y + bh / 2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawPaused() {
+  ctx.fillStyle = 'rgba(6,8,10,0.72)'; ctx.fillRect(0, 0, CW, CH);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e8e8f0';
+  ctx.font = 'bold ' + FS(30) + 'px Courier New';
+  ctx.fillText('PAUSED', CW / 2, CH / 2 - FS(10));
+  ctx.fillStyle = '#8a8aa0'; ctx.font = 'bold ' + FS(14) + 'px Courier New';
+  ctx.fillText(isTouch ? 'TAP TO RESUME' : 'CLICK OR PRESS P TO RESUME', CW / 2, CH / 2 + FS(22));
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(30,6,8,0.78)'; ctx.fillRect(0, 0, CW, CH);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff6b6b';
+  ctx.font = 'bold ' + Math.round(clamp(CW * 0.065, 24, 46)) + 'px Courier New';
+  ctx.fillText('VILLAGE LOST', CW / 2, CH * 0.38);
+  ctx.fillStyle = '#e8e8f0';
+  ctx.font = 'bold ' + FS(18) + 'px Courier New';
+  ctx.fillText('WAVES SURVIVED: ' + waveNumber, CW / 2, CH * 0.38 + FS(40));
+  ctx.fillStyle = '#8a8aa0';
+  ctx.font = 'bold ' + FS(14) + 'px Courier New';
+  ctx.fillText('BEST: ' + best, CW / 2, CH * 0.38 + FS(66));
+  ctx.fillStyle = '#4ad6ff';
+  ctx.font = 'bold ' + FS(16) + 'px Courier New';
+  if (Math.floor(elapsed * 2) % 2 === 0) ctx.fillText(isTouch ? 'TAP TO PLAY AGAIN' : 'CLICK TO PLAY AGAIN', CW / 2, CH * 0.62);
+}
+
+// ==================== INPUT ====================
+const pointer = { x: CW / 2, y: CH / 2 };
+const active = new Map();
+let dragStart = null, dragged = false, pinchDist = 0, consumedUI = false;
+
+function startGame() {
+  buildDecor();
+  newGame();
+  state = 'playing';
+}
+
+function assignJob(u, job) {
+  if (!u) return;
+  if (u.site && u.site.claimedBy === u) { u.site.claimedBy = null; u.site = null; }
+  u.job = job; u.workTimer = 0; u.tree = null; u.farm = null;
+  u.hx = u.x; u.hy = u.y; u.stateM = 'wander'; u.idleTimer = 0.1;
+  addFloat(u.x, u.y - 1.4, JOBS[job].short, JOBS[job].color);
+  playSound('click');
+}
+
+function pickVillager(sx, sy) {
+  let bestU = null, bestD = Infinity;
+  const tol = Math.max(26, cam.zoom * 0.9);
+  for (const u of villagers) {
+    const [ux, uy] = worldToScreen(u.x, u.y);
+    const d = dist2(sx, sy, ux, uy);
+    if (d < tol * tol && d < bestD) { bestD = d; bestU = u; }
+  }
+  return bestU;
+}
+
+function handleUIDown(x, y) {
+  if (state === 'menu') {
+    if (UI.play && hitRect(UI.play, x, y)) { playSound('click'); startGame(); return true; }
+    return false;
+  }
+  if (state === 'gameover') return false;
+  if (hitCircle(UI.mute, x, y)) { muted = !muted; playSound('click'); return true; }
+  if (hitCircle(UI.pause, x, y)) { state = state === 'paused' ? 'playing' : 'paused'; playSound('click'); return true; }
+  if (state !== 'playing') return false;
+  for (const b of UI.build) {
+    if (hitRect(b, x, y)) {
+      placing = (placing === b.type) ? null : b.type;
+      selected = null;
+      playSound(placing ? 'click' : 'nope');
+      return true;
+    }
+  }
+  if (selected) {
+    for (const j of UI.jobs) {
+      if (hitRect(j, x, y)) { assignJob(selected, j.job); return true; }
+    }
+  }
+  return false;
+}
+
+function handleTap(x, y) {
+  if (state === 'menu') return;
+  if (state === 'gameover') { state = 'menu'; return; }
+  if (state === 'paused') { state = 'playing'; return; }
+
+  if (placing) {
+    const [wx, wy] = screenToWorld(x, y);
+    const gx = snap(wx), gy = snap(wy);
+    const d = BUILDINGS[placing];
+    if (wood < d.cost) { playSound('nope'); addFloat(gx, gy, 'NEED ' + d.cost + ' WOOD', '#ff9a6a'); return; }
+    if (!canPlaceAt(placing, gx, gy)) { playSound('nope'); addFloat(gx, gy, 'BLOCKED', '#ff6b6b'); return; }
+    placeSite(placing, gx, gy);
+    if (!villagers.some(u => u.job === 'BUILDER')) addFloat(gx, gy - 2.6, 'NEEDS A BUILDER', '#ffb347');
+    return;
+  }
+  const u = pickVillager(x, y);
+  selected = (u === selected) ? null : u;
+  if (u) playSound('click');
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ensureAudio();
+  canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+  active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  pointer.x = e.clientX; pointer.y = e.clientY;
+
+  if (active.size === 2) {
+    const p = [...active.values()];
+    pinchDist = dist(p[0].x, p[0].y, p[1].x, p[1].y);
+    dragStart = null;
+    return;
+  }
+  consumedUI = handleUIDown(e.clientX, e.clientY);
+  if (consumedUI) { dragStart = null; return; }
+  dragStart = { x: e.clientX, y: e.clientY, t: performance.now(), cx: cam.x, cy: cam.y };
+  dragged = false;
+}, { passive: false });
+
+canvas.addEventListener('pointermove', e => {
+  e.preventDefault();
+  pointer.x = e.clientX; pointer.y = e.clientY;
+  if (!active.has(e.pointerId)) return;
+  active.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (active.size >= 2) {
+    const p = [...active.values()];
+    const nd = dist(p[0].x, p[0].y, p[1].x, p[1].y);
+    if (pinchDist > 0 && nd > 0) {
+      cam.zoom = clamp(cam.zoom * (nd / pinchDist), cam.minZoom, cam.maxZoom);
+      pinchDist = nd;
+    }
+    dragged = true;
+    return;
+  }
+  if (dragStart && state === 'playing') {
+    const dx = e.clientX - dragStart.x, dy = e.clientY - dragStart.y;
+    if (!dragged && (dx * dx + dy * dy) > 100) dragged = true;
+    if (dragged) {
+      cam.x = dragStart.cx - dx / cam.zoom;
+      cam.y = dragStart.cy - dy / cam.zoom;
+      clampCam();
+    }
+  }
+}, { passive: false });
+
+function endPointer(e) {
+  const wasSingle = active.size === 1;
+  active.delete(e.pointerId);
+  if (active.size < 2) pinchDist = 0;
+  if (!wasSingle || consumedUI) { dragStart = null; consumedUI = false; return; }
+  if (dragStart) {
+    const dt = performance.now() - dragStart.t;
+    if (!dragged && dt < 600) handleTap(e.clientX, e.clientY);
+  }
+  dragStart = null; dragged = false;
+}
+canvas.addEventListener('pointerup', endPointer, { passive: false });
+canvas.addEventListener('pointercancel', e => { active.delete(e.pointerId); dragStart = null; pinchDist = 0; consumedUI = false; });
+canvas.addEventListener('contextmenu', e => { e.preventDefault(); placing = null; selected = null; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.zoom = clamp(cam.zoom * (e.deltaY > 0 ? 0.9 : 1.1), cam.minZoom, cam.maxZoom);
+}, { passive: false });
+
+function clampCam() {
+  const lim = T.WORLD_RADIUS + 6;
+  cam.x = clamp(cam.x, -lim, lim);
+  cam.y = clamp(cam.y, -lim, lim);
+}
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
+  ensureAudio();
+  if (state === 'menu') { if (k === 'enter' || k === ' ') startGame(); return; }
+  if (state === 'gameover') { if (k === 'enter' || k === ' ') state = 'menu'; return; }
+  if (k === 'p' || k === 'escape') {
+    if (k === 'escape' && placing) { placing = null; return; }
+    state = state === 'paused' ? 'playing' : 'paused';
+    return;
+  }
+  if (state !== 'playing') return;
+  if (k === '1') { placing = placing === 'House' ? null : 'House'; selected = null; }
+  else if (k === '2') { placing = placing === 'Farm' ? null : 'Farm'; selected = null; }
+  else if (k === '3') { placing = placing === 'Barracks' ? null : 'Barracks'; selected = null; }
+  else if (selected) {
+    if (k === 'f') assignJob(selected, 'FARMER');
+    else if (k === 'l') assignJob(selected, 'WORKER');
+    else if (k === 'm') assignJob(selected, 'SOLDIER');
+    else if (k === 'b') assignJob(selected, 'BUILDER');
+    else if (k === 'u') assignJob(selected, 'IDLE');
+  }
+});
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; if (state === 'playing') state = 'paused'; });
+
+function keyboardPan(dt) {
+  const sp = 26 / cam.zoom * 60 * dt;
+  if (keys['a'] || keys['arrowleft']) cam.x -= sp;
+  if (keys['d'] || keys['arrowright']) cam.x += sp;
+  if (keys['w'] || keys['arrowup']) cam.y -= sp;
+  if (keys['s'] || keys['arrowdown']) cam.y += sp;
+  clampCam();
+}
+
+// ==================== UPDATE ====================
+function update(dt) {
+  elapsed += dt;
+  keyboardPan(dt);
+  if (shake > 0) shake -= dt;
+  if (warnFlash > 0) warnFlash -= dt;
+
+  waveCountdown -= dt;
+  if (waveCountdown <= 0) { spawnWave(); waveCountdown = T.WAVE_INTERVAL; }
+
+  treeCountdown -= dt;
+  if (treeCountdown <= 0) { if (trees.length < 34) spawnTree(); treeCountdown = T.TREE_RESPAWN; }
+
+  for (const t of trees) if (t.shake > 0) t.shake -= dt;
+  for (let i = villagers.length - 1; i >= 0; i--) updateVillager(villagers[i], dt);
+  for (let i = raiders.length - 1; i >= 0; i--) { if (raiders[i]) updateRaider(raiders[i], dt); }
+
+  for (let i = tracers.length - 1; i >= 0; i--) { tracers[i].life -= dt; if (tracers[i].life <= 0) tracers.splice(i, 1); }
+  for (let i = floats.length - 1; i >= 0; i--) { floats[i].life -= dt; if (floats[i].life <= 0) floats.splice(i, 1); }
+  for (let i = puffs.length - 1; i >= 0; i--) {
+    const p = puffs[i];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.92; p.vy *= 0.92; p.life -= dt;
+    if (p.life <= 0) puffs.splice(i, 1);
+  }
+
+  if (villagers.length === 0) {
+    state = 'gameover';
+    if (waveNumber > best) { best = waveNumber; try { localStorage.setItem('buildVillageBest', String(best)); } catch (e) {} }
+    playSound('boom');
+  }
+}
+
+// ==================== DRAW ====================
+function draw() {
+  ctx.save();
+  if (shake > 0) {
+    const m = shake * 10;
+    ctx.translate(rand(-m, m), rand(-m, m));
+  }
+  drawGround();
+  drawBuildings();
+  drawTrees();
+  drawVillagers();
+  drawRaiders();
+  drawEffects();
+  if (state === 'playing') drawPlacementGhost();
+  ctx.restore();
+
+  if (state === 'playing' || state === 'paused') { drawHUD(); drawBottomBar(); drawHint(); }
+  if (state === 'menu') drawMenu();
+  else if (state === 'paused') drawPaused();
+  else if (state === 'gameover') drawGameOver();
+}
+
+// ==================== LOOP ====================
+let last = performance.now();
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.1) dt = 0.1;
+  if (state === 'playing') update(dt);
+  else elapsed += dt;
+  draw();
+  requestAnimationFrame(frame);
+}
+
+resize();
+buildDecor();
+newGame();
+state = 'menu';
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
