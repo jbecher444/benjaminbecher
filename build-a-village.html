@@ -6,6 +6,10 @@
 <meta name="theme-color" content="#0a0a12">
 <meta name="description" content="Build a Village - gather wood, raise a settlement, assign villagers to jobs and hold off the raiders.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%8F%98%EF%B8%8F</text></svg>">
+<meta property="og:title" content="Build a Village">
+<meta property="og:description" content="Gather wood, raise a settlement, give your villagers jobs and hold off the raiders.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://benjaminbecher.com/build-a-village.html">
 <title>Build a Village</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -903,8 +907,8 @@ function drawHint() {
   roundRect((CW - w) / 2, y - FS(17), w, FS(42), 8); ctx.fill();
   ctx.fillStyle = '#8ad7ff';
   ctx.font = 'bold ' + FS(12) + 'px Courier New';
-  ctx.fillText(isTouch ? 'TAP A VILLAGER, THEN PICK A JOB' : 'CLICK A VILLAGER, THEN PICK A JOB (F/L/M/B/U)', CW / 2, y);
-  ctx.fillText('CHOP FIRST - WOOD BUILDS EVERYTHING', CW / 2, y + FS(17));
+  fitText(isTouch ? 'TAP A VILLAGER, THEN PICK A JOB' : 'CLICK A VILLAGER, THEN PICK A JOB (F/L/M/B/U)', CW / 2, y, CW - 32);
+  fitText('CHOP FIRST - WOOD BUILDS EVERYTHING', CW / 2, y + FS(17), CW - 32);
   ctx.restore();
 }
 
@@ -917,17 +921,38 @@ function panel(w, h) {
   return [x, y];
 }
 
+// Shrink the current font just enough for t to fit maxW (never grows it).
+function fitText(t, x, y, maxW) {
+  const w = ctx.measureText(t).width;
+  if (w <= maxW) { ctx.fillText(t, x, y); return; }
+  const f = ctx.font, m = f.match(/([\d.]+)px/);
+  if (m) ctx.font = f.replace(m[0], Math.max(8, Math.floor(parseFloat(m[1]) * maxW / w)) + 'px');
+  ctx.fillText(t, x, y); ctx.font = f;
+}
+// Break a line at its '  -  ' separators so each piece fits maxW (current font).
+function wrapMenuLine(t, maxW) {
+  if (ctx.measureText(t).width <= maxW) return [t];
+  const parts = t.split('  -  '), out = []; let cur = '';
+  for (const pt of parts) {
+    const tryS = cur ? cur + '  -  ' + pt : pt;
+    if (cur && ctx.measureText(tryS).width > maxW) { out.push(cur); cur = pt; } else cur = tryS;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 function drawMenu() {
   ctx.fillStyle = 'rgba(6,8,10,0.72)'; ctx.fillRect(0, 0, CW, CH);
   ctx.textAlign = 'center';
   const cx = CW / 2;
   const titleY = CH * 0.24;
+  const maxW = CW - 32;
   ctx.fillStyle = '#e8e8f0';
   ctx.font = 'bold ' + Math.round(clamp(CW * 0.075, 26, 58)) + 'px Courier New';
-  ctx.fillText('BUILD A VILLAGE', cx, titleY);
+  fitText('BUILD A VILLAGE', cx, titleY, maxW);
   ctx.fillStyle = '#8a8aa0';
   ctx.font = 'bold ' + FS(13) + 'px Courier New';
-  ctx.fillText('GATHER  -  BUILD  -  DEFEND', cx, titleY + FS(26));
+  fitText('GATHER  -  BUILD  -  DEFEND', cx, titleY + FS(26), maxW);
 
   const lines = isTouch ? [
     'TAP a villager, then tap a JOB button',
@@ -945,12 +970,14 @@ function drawMenu() {
   ctx.fillStyle = '#a8a8c0';
   ctx.font = FS(13) + 'px Courier New';
   let ly = titleY + FS(62);
-  for (const l of lines) { ctx.fillText(l, cx, ly); ly += FS(21); }
+  for (const l of lines) {
+    for (const piece of wrapMenuLine(l, maxW)) { fitText(piece, cx, ly, maxW); ly += FS(21); }
+  }
 
   ctx.fillStyle = '#8a8aa0';
   ctx.font = 'bold ' + FS(12) + 'px Courier New';
-  ctx.fillText('First raid arrives in 45 seconds. Build fast.', cx, ly + FS(12));
-  if (best > 0) ctx.fillText('BEST: ' + best + ' WAVE' + (best === 1 ? '' : 'S') + ' SURVIVED', cx, ly + FS(32));
+  fitText('First raid arrives in 45 seconds. Build fast.', cx, ly + FS(12), maxW);
+  if (best > 0) fitText('BEST: ' + best + ' WAVE' + (best === 1 ? '' : 'S') + ' SURVIVED', cx, ly + FS(32), maxW);
 
   const bw = Math.min(260 * uiScale, CW * 0.7), bh = 54 * uiScale;
   UI.play = { x: cx - bw / 2, y: CH * 0.80 - bh / 2, w: bw, h: bh };
@@ -971,7 +998,7 @@ function drawPaused() {
   ctx.font = 'bold ' + FS(30) + 'px Courier New';
   ctx.fillText('PAUSED', CW / 2, CH / 2 - FS(10));
   ctx.fillStyle = '#8a8aa0'; ctx.font = 'bold ' + FS(14) + 'px Courier New';
-  ctx.fillText(isTouch ? 'TAP TO RESUME' : 'CLICK OR PRESS P TO RESUME', CW / 2, CH / 2 + FS(22));
+  fitText(isTouch ? 'TAP TO RESUME' : 'CLICK OR PRESS P TO RESUME', CW / 2, CH / 2 + FS(22), CW - 32);
 }
 
 function drawGameOver() {
