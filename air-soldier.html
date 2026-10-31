@@ -3,6 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e1a">
+<meta name="description" content="Air Soldier - a fast aerial shooter. Fly through 10 levels, dodge missiles, beat the bosses and unlock new ships. Plays in the browser on phones and computers.">
+<meta property="og:title" content="Air Soldier">
+<meta property="og:description" content="A fast aerial shooter: fly through 10 levels, beat the bosses and unlock new ships.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://benjaminbecher.com/air-soldier.html">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%E2%9C%88%EF%B8%8F</text></svg>">
 <title>Air Soldier</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -19,6 +26,35 @@ const ctx = canvas.getContext('2d');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 window.addEventListener('resize', () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; });
+
+// ==================== SMALL-SCREEN LAYOUT HELPERS ====================
+// Phones are narrow: text is shrunk to fit and the HUD is rearranged so nothing
+// overlaps. On a wide screen every one of these returns the original layout.
+function isNarrow(){return canvas.width<640;}
+// fillText that shrinks the current font just enough to fit maxW (never grows it).
+function fitText(t,x,y,maxW){
+  if(maxW===undefined)maxW=canvas.width-32;
+  const w=ctx.measureText(t).width;
+  if(w<=maxW){ctx.fillText(t,x,y);return;}
+  const f=ctx.font,m=f.match(/([\d.]+)px/);
+  if(m)ctx.font=f.replace(m[0],Math.max(8,Math.floor(parseFloat(m[1])*maxW/w))+'px');
+  ctx.fillText(t,x,y);ctx.font=f;
+}
+// Split a line on its wide-space separators so each piece fits maxW (uses the current font).
+function wrapLine(t,maxW){
+  if(ctx.measureText(t).width<=maxW)return [t];
+  const parts=t.split(/ {3,}/),out=[];let cur='';
+  parts.forEach(pt=>{const tryS=cur?cur+'   '+pt:pt;if(cur&&ctx.measureText(tryS).width>maxW){out.push(cur);cur=pt;}else cur=tryS;});
+  if(cur)out.push(cur);return out;
+}
+function hudBarW(){return isNarrow()?Math.round(Math.max(110,Math.min(210,canvas.width*0.36))):210;}
+function codeBoxRect(){
+  // Wide: centred at the top. Narrow: tucked under the hearts on the left, clear of the HP bar.
+  if(!isNarrow())return {x:canvas.width/2-80,y:4,w:160,h:24};
+  const y=(typeof level!=='undefined'&&level>=2)?102:84;
+  return {x:16,y:y,w:96,h:22};
+}
+function pauseBtnPos(){return {x:canvas.width-36,y:isNarrow()?128:96};}
 
 // ==================== AUDIO ====================
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -440,7 +476,7 @@ class Player{
   constructor(){const S=shipData();this.ship=S.id;this.x=canvas.width*0.15;this.y=canvas.height*0.5;this.width=70;this.height=50;this.vx=0;this.vy=0;this.health=S.hp;this.maxHealth=S.hp;this.lives=3;this.shootCooldown=0;this.shootRate=S.rate;this.accel=S.acc;this.baseWeapon=S.wep;this.weaponLevel=S.wep;this.shieldActive=false;this.shieldTimer=0;this.energyShield=0;this.maxEnergyShield=100;this.invincible=false;this.invincibleTimer=0;this.tilt=0;}
   update(mouse){
     const tx=Math.min(mouse.x,canvas.width*0.6),ty=mouse.y;this.vx=(tx-this.x)*this.accel;this.vy=(ty-this.y)*this.accel;this.x+=this.vx;this.y+=this.vy;
-    this.tilt+=(this.vy*0.03-this.tilt)*0.1;this.x=Math.max(20,Math.min(canvas.width*0.6,this.x));this.y=Math.max(30,Math.min(canvas.height-30,this.y));
+    this.tilt+=(this.vy*0.03-this.tilt)*0.1;this.x=Math.max(isNarrow()?this.width/2+6:20,Math.min(canvas.width*0.6,this.x));this.y=Math.max(30,Math.min(canvas.height-30,this.y));
     if(this.shootCooldown>0)this.shootCooldown--;if(mouse.down&&this.shootCooldown<=0){this.shoot();this.shootCooldown=this.shootRate;}
     if(this.shieldActive){this.shieldTimer--;if(this.shieldTimer<=0)this.shieldActive=false;}
     if(this.invincible){this.invincibleTimer--;if(this.invincibleTimer<=0)this.invincible=false;}
@@ -638,7 +674,7 @@ class Boss{
     }
     ctx.restore();
     // Health bar (big, centered at top)
-    const bw=300,bh=12,bx=canvas.width/2-bw/2,by=8;
+    const bw=Math.min(300,canvas.width-40),bh=12,bx=canvas.width/2-bw/2,by=isNarrow()?160:8;
     ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(bx-2,by-2,bw+4,bh+4);
     ctx.fillStyle='#222';ctx.fillRect(bx,by,bw,bh);
     const hp=this.health/this.maxHealth;
@@ -792,8 +828,8 @@ canvas.addEventListener('mousedown',e=>{mouse.down=true;ensureAudio();
   if(cheatCodeFocused)return;
   // Check if clicking the CODE box
   if(gameState==='playing'){
-    const codeBoxW=160,codeBoxH=24,codeBoxX=canvas.width/2-codeBoxW/2,codeBoxY=4;
-    if(e.clientX>=codeBoxX&&e.clientX<=codeBoxX+codeBoxW&&e.clientY>=codeBoxY&&e.clientY<=codeBoxY+codeBoxH){
+    const cb=codeBoxRect();
+    if(e.clientX>=cb.x&&e.clientX<=cb.x+cb.w&&e.clientY>=cb.y&&e.clientY<=cb.y+cb.h){
       cheatCodeFocused=true;cheatInput='';gameState='paused';stopMusic();return;
     }
   }
@@ -809,7 +845,7 @@ const isTouch=('ontouchstart' in window)||navigator.maxTouchPoints>0;
 const TOUCH_Y_OFFSET=70; // plane rides above your finger so it isn't hidden under it
 function touchBtnHit(x,y){
   // Pause button (top-right)
-  let dx=x-(canvas.width-36),dy=y-96;
+  const pb=pauseBtnPos();let dx=x-pb.x,dy=y-pb.y;
   if(dx*dx+dy*dy<=32*32){gameState='paused';stopMusic();return true;}
   // Shield button (bottom-right, Lv.2+)
   if(level>=2){dx=x-(canvas.width-56);dy=y-(canvas.height-64);
@@ -830,7 +866,7 @@ canvas.addEventListener('touchstart',e=>{
   }
   if(gameState==='paused'){gameState='playing';startMusic();return;}
   if(gameState==='hangar'){hangarClick(tx,ty);return;}
-  if(gameState==='menu'){if(hitMenuHangar(tx,ty)){gameState='hangar';hangarCheat='';return;}gameState='playing';initGame();startMusic();return;}
+  if(gameState==='menu'){if(hitMenuHangar(tx,ty)){gameState='hangar';hangarCheat='';return;}gameState='playing';initGame();mouse.x=player.x;mouse.y=player.y;mouse.down=false;startMusic();return;}
   if(gameState==='gameover'||gameState==='victory'){gameState='menu';return;}
   if(gameState==='transition'&&transitionPhase>=2){transitionPhase=3;return;}
 },{passive:false});
@@ -1011,7 +1047,7 @@ function draw(){
 
 function drawHUD(){
   ctx.save();
-  const hbw=210,hbh=16,hx=20,hy=20;
+  const hbw=hudBarW(),hbh=16,hx=20,hy=20,narrow=isNarrow();
   ctx.fillStyle='rgba(0,0,0,0.45)';ctx.fillRect(hx-4,hy-4,hbw+8,hbh+8);
   ctx.fillStyle='#2a2a2a';ctx.fillRect(hx,hy,hbw,hbh);
   const hp=Math.max(0,player.health/player.maxHealth);
@@ -1019,23 +1055,27 @@ function drawHUD(){
   ctx.strokeStyle='#88aabb';ctx.lineWidth=1;ctx.strokeRect(hx,hy,hbw,hbh);
   ctx.fillStyle='#fff';ctx.font='bold 11px Courier New';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('HP',hx+hbw+10,hy+hbh/2);
   let nextY=hy+hbh+8;
-  if(level>=2){ctx.fillStyle='#222';ctx.fillRect(hx,nextY,hbw,10);ctx.fillStyle='#aa55ff';ctx.fillRect(hx,nextY,hbw*Math.max(0,player.energyShield/player.maxEnergyShield),10);ctx.strokeRect(hx,nextY,hbw,10);ctx.fillStyle='#cc99ff';ctx.font='10px Courier New';ctx.fillText(isTouch?'SHIELD  (button / 2-finger tap)':'SHIELD  (E / right-click)',hx+hbw+10,nextY+5);nextY+=18;}
+  if(level>=2){ctx.fillStyle='#222';ctx.fillRect(hx,nextY,hbw,10);ctx.fillStyle='#aa55ff';ctx.fillRect(hx,nextY,hbw*Math.max(0,player.energyShield/player.maxEnergyShield),10);ctx.strokeRect(hx,nextY,hbw,10);ctx.fillStyle='#cc99ff';ctx.font='10px Courier New';ctx.fillText(narrow?'SHIELD':(isTouch?'SHIELD  (button / 2-finger tap)':'SHIELD  (E / right-click)'),hx+hbw+10,nextY+5);nextY+=18;}
   ctx.fillStyle='#ff77bb';ctx.font='16px Courier New';ctx.textBaseline='alphabetic';ctx.fillText('♥ '.repeat(Math.max(0,player.lives)),hx,nextY+16);
-  ctx.textAlign='right';ctx.fillStyle='#fff';ctx.font='bold 22px Courier New';ctx.fillText('SCORE '+score,canvas.width-20,34);
-  ctx.font='13px Courier New';ctx.fillStyle='#88ddff';ctx.fillText('LEVEL '+level+'  '+(LEVEL_CONFIG[level]?LEVEL_CONFIG[level].name:''),canvas.width-20,54);
-  ctx.fillStyle='#ffaa44';ctx.fillText('WEAPON LV.'+player.weaponLevel,canvas.width-20,72);
-  ctx.fillStyle='#ffd24a';ctx.font='12px Courier New';ctx.fillText(SHIPS[player.ship-1].name+'  •  RANK '+currentRank().n,canvas.width-20,90);
+  // Right column. On a phone it must stay right of the HP bar + label.
+  const colW=narrow?canvas.width-20-(hx+hbw+34):canvas.width;
+  ctx.textAlign='right';ctx.fillStyle='#fff';ctx.font=narrow?'bold 18px Courier New':'bold 22px Courier New';fitText('SCORE '+score,canvas.width-20,narrow?32:34,colW);
+  ctx.font=narrow?'12px Courier New':'13px Courier New';ctx.fillStyle='#88ddff';
+  if(narrow){fitText('LEVEL '+level,canvas.width-20,52,colW);}
+  else ctx.fillText('LEVEL '+level+'  '+(LEVEL_CONFIG[level]?LEVEL_CONFIG[level].name:''),canvas.width-20,54);
+  ctx.fillStyle='#ffaa44';fitText('WEAPON LV.'+player.weaponLevel,canvas.width-20,narrow?68:72,narrow?canvas.width-40:canvas.width);
+  ctx.fillStyle='#ffd24a';ctx.font=narrow?'11px Courier New':'12px Courier New';fitText(SHIPS[player.ship-1].name+'  •  RANK '+currentRank().n,canvas.width-20,narrow?84:90,narrow?canvas.width-40:canvas.width);
   if(boss){const bw=Math.min(520,canvas.width*0.55),bx=canvas.width/2-bw/2,by=canvas.height-28;ctx.fillStyle='#330008';ctx.fillRect(bx,by,bw,14);ctx.fillStyle='#ff3355';ctx.fillRect(bx,by,bw*Math.max(0,boss.health/boss.maxHealth),14);ctx.strokeStyle='#ff99aa';ctx.strokeRect(bx,by,bw,14);ctx.fillStyle='#fff';ctx.font='bold 12px Courier New';ctx.textAlign='center';ctx.fillText('BOSS',canvas.width/2,by-6);}
-  const cbw=160,cbh=24,cbx=canvas.width/2-cbw/2,cby=4;
+  const cb=codeBoxRect(),cbx=cb.x,cby=cb.y,cbw=cb.w,cbh=cb.h;
   ctx.fillStyle='rgba(0,0,0,0.4)';ctx.fillRect(cbx,cby,cbw,cbh);ctx.strokeStyle=cheatInvincible?'#ffd700':'#445566';ctx.lineWidth=1;ctx.strokeRect(cbx,cby,cbw,cbh);
-  ctx.fillStyle=cheatInvincible?'#ffd700':'#778899';ctx.font='11px Courier New';ctx.textAlign='center';ctx.fillText(cheatInvincible?'★ INVINCIBLE ★':'CODE',canvas.width/2,cby+16);
+  ctx.fillStyle=cheatInvincible?'#ffd700':'#778899';ctx.font='11px Courier New';ctx.textAlign='center';fitText(cheatInvincible?'★ INVINCIBLE ★':'CODE',cbx+cbw/2,cby+(narrow?15:16),cbw-6);
   ctx.restore();
 }
 
 function drawTouchControls(){
   ctx.save();
   // Pause button (top-right)
-  const px=canvas.width-36,py=96;
+  const pb=pauseBtnPos(),px=pb.x,py=pb.y;
   ctx.globalAlpha=0.55;ctx.fillStyle='#122030';ctx.strokeStyle='#88aabb';ctx.lineWidth=2;
   ctx.beginPath();ctx.arc(px,py,22,0,Math.PI*2);ctx.fill();ctx.stroke();
   ctx.fillStyle='#cfe6f5';ctx.fillRect(px-7,py-9,5,18);ctx.fillRect(px+2,py-9,5,18);
@@ -1052,14 +1092,14 @@ function drawTouchControls(){
 }
 
 function drawBossWarning(){
-  if(Math.floor(gameTime/8)%2===0){ctx.save();ctx.textAlign='center';ctx.fillStyle='#ff3344';ctx.font='bold 32px Courier New';ctx.fillText('!!  WARNING: BOSS APPROACHING  !!',canvas.width/2,canvas.height*0.28);ctx.restore();}
+  if(Math.floor(gameTime/8)%2===0){ctx.save();ctx.textAlign='center';ctx.fillStyle='#ff3344';ctx.font='bold 32px Courier New';fitText('!!  WARNING: BOSS APPROACHING  !!',canvas.width/2,canvas.height*0.28);ctx.restore();}
 }
 
 function drawXPBar(cx,y,bw,s){
   const r=currentRank(),nx=nextRank();
   ctx.textAlign='center';
   ctx.fillStyle='#ffd24a';ctx.font='bold '+Math.round(17*s)+'px Courier New';
-  ctx.fillText('RANK '+r.n+'  —  '+r.name,cx,y);
+  fitText('RANK '+r.n+'  —  '+r.name,cx,y);
   const by=y+Math.round(10*s),bh=Math.round(9*s);
   ctx.fillStyle='#1c2634';ctx.fillRect(cx-bw/2,by,bw,bh);
   let frac=1;if(nx)frac=Math.max(0,Math.min(1,(career.xp-r.xp)/(nx.xp-r.xp)));
@@ -1067,7 +1107,7 @@ function drawXPBar(cx,y,bw,s){
   ctx.fillStyle=g;ctx.fillRect(cx-bw/2,by,bw*frac,bh);
   ctx.strokeStyle='#54708c';ctx.lineWidth=1;ctx.strokeRect(cx-bw/2,by,bw,bh);
   ctx.fillStyle='#9fd6ff';ctx.font=Math.round(12*s)+'px Courier New';
-  ctx.fillText(nx?(career.xp.toLocaleString()+' XP   ('+(nx.xp-career.xp).toLocaleString()+' to '+nx.name+')'):(career.xp.toLocaleString()+' XP   —  MAX RANK!'),cx,by+bh+Math.round(14*s));
+  fitText(nx?(career.xp.toLocaleString()+' XP   ('+(nx.xp-career.xp).toLocaleString()+' to '+nx.name+')'):(career.xp.toLocaleString()+' XP   —  MAX RANK!'),cx,by+bh+Math.round(14*s));
 }
 
 function menuLayout(){
@@ -1080,25 +1120,28 @@ function menuLayout(){
   y+=Math.round(56*s);L.ship=y;
   y+=Math.round(54*s);L.start=y;
   y+=Math.round(26*s);L.controls=y;
+  ctx.save();ctx.font=Math.round(12*s)+'px Courier New';L.ctrlLines=wrapLine(menuControlsText(),canvas.width-32);ctx.restore();
+  L.ctrlStep=Math.round(16*s);y+=L.ctrlStep*(L.ctrlLines.length-1);
   y+=Math.round(26*s);L.btn={x:cx-bw/2,y:y,w:bw,h:bh};
   y+=bh+Math.round(34*s);L.scores=y;
   return L;
 }
+function menuControlsText(){return isTouch?'Move: drag finger   Fire: auto   Shield: button / 2-finger tap (Lv.2+)':'Move: mouse   Fire: hold mouse   Shield: E or right-click (Lv.2+)   Pause: P';}
 function hitMenuHangar(x,y){const b=menuLayout().btn;return x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h;}
 
 function drawMenu(){
   ctx.save();ctx.textAlign='center';
   const L=menuLayout(),s=L.s,cx=L.cx,t=performance.now()/600;
-  ctx.fillStyle='#eaf6ff';ctx.font='bold '+Math.round(58*s)+'px Courier New';ctx.shadowColor='#4ad6ff';ctx.shadowBlur=26;ctx.fillText('AIR SOLDIER',cx,L.title);ctx.shadowBlur=0;
-  ctx.fillStyle='#9fd6ff';ctx.font=Math.round(16*s)+'px Courier New';ctx.fillText('Defend the skies across 10 levels',cx,L.sub);
+  ctx.fillStyle='#eaf6ff';ctx.font='bold '+Math.round(58*s)+'px Courier New';ctx.shadowColor='#4ad6ff';ctx.shadowBlur=26;fitText('AIR SOLDIER',cx,L.title);ctx.shadowBlur=0;
+  ctx.fillStyle='#9fd6ff';ctx.font=Math.round(16*s)+'px Courier New';fitText('Defend the skies across 10 levels',cx,L.sub);
   drawXPBar(cx,L.rank,Math.round(300*s),s);
   const sh=SHIPS[selectedShip()-1];
   ctx.save();ctx.translate(cx-Math.round(96*s),L.ship+Math.round(2*s));ctx.scale(0.62*s,0.62*s);drawShipArt(sh.id,70);ctx.restore();
   ctx.textAlign='left';ctx.fillStyle='#cfe6f5';ctx.font='bold '+Math.round(16*s)+'px Courier New';
   ctx.fillText(sh.name,cx-Math.round(40*s),L.ship+Math.round(6*s));
   ctx.textAlign='center';
-  ctx.fillStyle=Math.floor(t)%2?'#ffffff':'#7fd4ff';ctx.font='bold '+Math.round(22*s)+'px Courier New';ctx.fillText(isTouch?'TAP to start':'CLICK or press SPACE to start',cx,L.start);
-  ctx.fillStyle='#8aa6bb';ctx.font=Math.round(12*s)+'px Courier New';ctx.fillText(isTouch?'Move: drag finger   Fire: auto   Shield: button / 2-finger tap (Lv.2+)':'Move: mouse   Fire: hold mouse   Shield: E or right-click (Lv.2+)   Pause: P',cx,L.controls);
+  ctx.fillStyle=Math.floor(t)%2?'#ffffff':'#7fd4ff';ctx.font='bold '+Math.round(22*s)+'px Courier New';fitText(isTouch?'TAP to start':'CLICK or press SPACE to start',cx,L.start);
+  ctx.fillStyle='#8aa6bb';ctx.font=Math.round(12*s)+'px Courier New';L.ctrlLines.forEach((ln,i)=>ctx.fillText(ln,cx,L.controls+i*L.ctrlStep));
   const b=L.btn,hov=true;
   ctx.fillStyle='rgba(20,40,60,0.85)';ctx.fillRect(b.x,b.y,b.w,b.h);
   ctx.strokeStyle=Math.floor(t*2)%2?'#4ad6ff':'#2b7fa8';ctx.lineWidth=2;ctx.strokeRect(b.x,b.y,b.w,b.h);
@@ -1207,11 +1250,11 @@ function drawPause(){
     ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle='#ffd700';ctx.font='bold 28px Courier New';ctx.fillText('ENTER CODE',canvas.width/2,canvas.height/2-30);
     ctx.fillStyle='#fff';ctx.font='bold 40px Courier New';ctx.fillText(cheatInput||'_',canvas.width/2,canvas.height/2+20);
-    ctx.fillStyle='#aaa';ctx.font='13px Courier New';ctx.fillText('Type the code, then ENTER  (ESC to cancel)',canvas.width/2,canvas.height/2+58);
+    ctx.fillStyle='#aaa';ctx.font='13px Courier New';fitText('Type the code, then ENTER  (ESC to cancel)',canvas.width/2,canvas.height/2+58);
     ctx.restore();return;
   }
   ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle='#ffffff';ctx.font='bold 48px Courier New';ctx.fillText('PAUSED',canvas.width/2,canvas.height/2);
+  ctx.fillStyle='#ffffff';ctx.font='bold 48px Courier New';fitText('PAUSED',canvas.width/2,canvas.height/2);
   ctx.fillStyle='#9fd6ff';ctx.font='18px Courier New';ctx.fillText(isTouch?'Tap to resume':'Press P to resume',canvas.width/2,canvas.height/2+40);
   ctx.restore();
 }
@@ -1219,20 +1262,20 @@ function drawPause(){
 function drawTransition(){
   ctx.save();ctx.textAlign='center';
   ctx.fillStyle='rgba(0,0,20,0.55)';ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle='#7CFC98';ctx.font='bold 52px Courier New';ctx.shadowColor='#2ecc71';ctx.shadowBlur=18;ctx.fillText('LEVEL '+level+' CLEARED!',canvas.width/2,canvas.height*0.26);ctx.shadowBlur=0;
-  if(transitionPhase>=2){ctx.fillStyle=Math.floor(performance.now()/400)%2?'#ffffff':'#9fd6ff';ctx.font='20px Courier New';ctx.fillText((isTouch?'Tap':'Click')+' to continue to Level '+(level+1),canvas.width/2,canvas.height*0.82);}
+  ctx.fillStyle='#7CFC98';ctx.font='bold 52px Courier New';ctx.shadowColor='#2ecc71';ctx.shadowBlur=18;fitText('LEVEL '+level+' CLEARED!',canvas.width/2,canvas.height*0.26);ctx.shadowBlur=0;
+  if(transitionPhase>=2){ctx.fillStyle=Math.floor(performance.now()/400)%2?'#ffffff':'#9fd6ff';ctx.font='20px Courier New';fitText((isTouch?'Tap':'Click')+' to continue to Level '+(level+1),canvas.width/2,canvas.height*0.82);}
   ctx.restore();
 }
 
 function drawGameOver(){
   ctx.save();ctx.textAlign='center';
   ctx.fillStyle='rgba(25,0,0,0.7)';ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle='#ff5555';ctx.font='bold 60px Courier New';ctx.shadowColor='#ff0000';ctx.shadowBlur=18;ctx.fillText('GAME OVER',canvas.width/2,canvas.height*0.34);ctx.shadowBlur=0;
-  ctx.fillStyle='#ffffff';ctx.font='22px Courier New';ctx.fillText('Score: '+score+'     Reached Level '+level,canvas.width/2,canvas.height*0.34+48);
-  ctx.fillStyle='#7fe6ff';ctx.font='bold 20px Courier New';ctx.fillText('+'+lastRunXP.toLocaleString()+' XP earned',canvas.width/2,canvas.height*0.34+82);
+  ctx.fillStyle='#ff5555';ctx.font='bold 60px Courier New';ctx.shadowColor='#ff0000';ctx.shadowBlur=18;fitText('GAME OVER',canvas.width/2,canvas.height*0.34);ctx.shadowBlur=0;
+  ctx.fillStyle='#ffffff';ctx.font='22px Courier New';fitText('Score: '+score+'     Reached Level '+level,canvas.width/2,canvas.height*0.34+48);
+  ctx.fillStyle='#7fe6ff';ctx.font='bold 20px Courier New';fitText('+'+lastRunXP.toLocaleString()+' XP earned',canvas.width/2,canvas.height*0.34+82);
   drawXPBar(canvas.width/2,canvas.height*0.34+114,300,1);
-  if(lastRunUnlocks.length){ctx.fillStyle='#ffd24a';ctx.font='bold 17px Courier New';ctx.fillText('★ NEW SHIP UNLOCKED: '+lastRunUnlocks.map(q=>q.name).join(', ')+' ★',canvas.width/2,canvas.height*0.34+172);}
-  ctx.fillStyle=Math.floor(performance.now()/500)%2?'#ffffff':'#ff9999';ctx.font='bold 20px Courier New';ctx.fillText(isTouch?'Tap for the menu':'Click or press SPACE for the menu',canvas.width/2,canvas.height*0.6);
+  if(lastRunUnlocks.length){ctx.fillStyle='#ffd24a';ctx.font='bold 17px Courier New';fitText('★ NEW SHIP UNLOCKED: '+lastRunUnlocks.map(q=>q.name).join(', ')+' ★',canvas.width/2,canvas.height*0.34+172);}
+  ctx.fillStyle=Math.floor(performance.now()/500)%2?'#ffffff':'#ff9999';ctx.font='bold 20px Courier New';fitText(isTouch?'Tap for the menu':'Click or press SPACE for the menu',canvas.width/2,canvas.height*0.6);
   ctx.restore();
 }
 
@@ -1240,12 +1283,12 @@ function drawVictory(){
   ctx.save();ctx.textAlign='center';
   ctx.fillStyle='rgba(0,8,28,0.72)';ctx.fillRect(0,0,canvas.width,canvas.height);
   const hue=(performance.now()/20)%360;
-  ctx.fillStyle='hsl('+hue+',85%,65%)';ctx.font='bold 66px Courier New';ctx.shadowColor='#ffd700';ctx.shadowBlur=26;ctx.fillText('VICTORY!',canvas.width/2,canvas.height*0.3);ctx.shadowBlur=0;
-  ctx.fillStyle='#ffffff';ctx.font='22px Courier New';ctx.fillText('You cleared all 10 levels!   Final score: '+score,canvas.width/2,canvas.height*0.3+50);
-  ctx.fillStyle='#7fe6ff';ctx.font='bold 20px Courier New';ctx.fillText('+'+lastRunXP.toLocaleString()+' XP earned  (includes 2,500 victory bonus)',canvas.width/2,canvas.height*0.3+84);
+  ctx.fillStyle='hsl('+hue+',85%,65%)';ctx.font='bold 66px Courier New';ctx.shadowColor='#ffd700';ctx.shadowBlur=26;fitText('VICTORY!',canvas.width/2,canvas.height*0.3);ctx.shadowBlur=0;
+  ctx.fillStyle='#ffffff';ctx.font='22px Courier New';fitText('You cleared all 10 levels!   Final score: '+score,canvas.width/2,canvas.height*0.3+50);
+  ctx.fillStyle='#7fe6ff';ctx.font='bold 20px Courier New';fitText('+'+lastRunXP.toLocaleString()+' XP earned  (includes 2,500 victory bonus)',canvas.width/2,canvas.height*0.3+84);
   drawXPBar(canvas.width/2,canvas.height*0.3+116,300,1);
-  if(lastRunUnlocks.length){ctx.fillStyle='#ffd24a';ctx.font='bold 17px Courier New';ctx.fillText('★ NEW SHIP UNLOCKED: '+lastRunUnlocks.map(q=>q.name).join(', ')+' ★',canvas.width/2,canvas.height*0.3+174);}
-  ctx.fillStyle=Math.floor(performance.now()/500)%2?'#ffffff':'#ffd700';ctx.font='bold 20px Courier New';ctx.fillText(isTouch?'Tap for the menu':'Click or press SPACE for the menu',canvas.width/2,canvas.height*0.62);
+  if(lastRunUnlocks.length){ctx.fillStyle='#ffd24a';ctx.font='bold 17px Courier New';fitText('★ NEW SHIP UNLOCKED: '+lastRunUnlocks.map(q=>q.name).join(', ')+' ★',canvas.width/2,canvas.height*0.3+174);}
+  ctx.fillStyle=Math.floor(performance.now()/500)%2?'#ffffff':'#ffd700';ctx.font='bold 20px Courier New';fitText(isTouch?'Tap for the menu':'Click or press SPACE for the menu',canvas.width/2,canvas.height*0.62);
   ctx.restore();
 }
 
